@@ -521,6 +521,7 @@ impl Spanned for Statement {
             Statement::CreateUser(..) => Span::empty(),
             Statement::AlterSchema(s) => s.span(),
             Statement::Vacuum(..) => Span::empty(),
+            Statement::Reindex(..) => Span::empty(),
             Statement::AlterUser(..) => Span::empty(),
             Statement::Reset(..) => Span::empty(),
         }

@@ -3960,6 +3960,13 @@ pub enum Statement {
     Drop {
         /// The type of the object to drop: TABLE, VIEW, etc.
         object_type: ObjectType,
+        /// Whether `CONCURRENTLY` was specified: `DROP INDEX CONCURRENTLY`.
+        ///
+        /// PostgreSQL only, and only for indexes; it cannot run inside a
+        /// transaction block.
+        ///
+        /// [PostgreSQL](https://www.postgresql.org/docs/current/sql-dropindex.html)
+        concurrently: bool,
         /// An optional `IF EXISTS` clause. (Non-standard.)
         if_exists: bool,
         /// One or more objects to drop. (ANSI SQL requires exactly one.)
@@ -5013,6 +5020,13 @@ pub enum Statement {
     /// ```
     /// [Redshift](https://docs.aws.amazon.com/redshift/latest/dg/r_VACUUM_command.html)
     Vacuum(VacuumStatement),
+    /// Rebuilds an index, or every index on a table, in a schema, in a database, or on system catalogs
+    ///
+    /// ```sql
+    /// REINDEX [ ( option [, ...] ) ] { INDEX | TABLE | SCHEMA | DATABASE | SYSTEM } [ CONCURRENTLY ] name
+    /// ```
+    /// [PostgreSQL](https://www.postgresql.org/docs/current/sql-reindex.html)
+    Reindex(ReindexStatement),
     /// Restore the value of a run-time parameter to the default value.
     ///
     /// ```sql
@@ -5723,6 +5737,7 @@ impl fmt::Display for Statement {
             }
             Statement::Drop {
                 object_type,
+                concurrently,
                 if_exists,
                 names,
                 cascade,
@@ -5733,9 +5748,10 @@ impl fmt::Display for Statement {
             } => {
                 write!(
                     f,
-                    "DROP {}{}{} {}{}{}{}",
+                    "DROP {}{}{}{} {}{}{}{}",
                     if *temporary { "TEMPORARY " } else { "" },
                     object_type,
+                    if *concurrently { " CONCURRENTLY" } else { "" },
                     if *if_exists { " IF EXISTS" } else { "" },
                     display_comma_separated(names),
                     if *cascade { " CASCADE" } else { "" },
@@ -6514,6 +6530,7 @@ impl fmt::Display for Statement {
             Statement::CreateUser(s) => write!(f, "{s}"),
             Statement::AlterSchema(s) => write!(f, "{s}"),
             Statement::Vacuum(s) => write!(f, "{s}"),
+            Statement::Reindex(s) => write!(f, "{s}"),
             Statement::AlterUser(s) => write!(f, "{s}"),
             Statement::Reset(s) => write!(f, "{s}"),
         }
@@ -12626,6 +12643,83 @@ impl From<CreateWarehouse> for Statement {
 impl From<VacuumStatement> for Statement {
     fn from(v: VacuumStatement) -> Self {
         Self::Vacuum(v)
+    }
+}
+
+/// What a `REINDEX` statement rebuilds.
+///
+/// [PostgreSQL](https://www.postgresql.org/docs/current/sql-reindex.html)
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum ReindexTarget {
+    /// `REINDEX INDEX name`
+    Index,
+    /// `REINDEX TABLE name`
+    Table,
+    /// `REINDEX SCHEMA name`
+    Schema,
+    /// `REINDEX DATABASE [name]`
+    Database,
+    /// `REINDEX SYSTEM [name]`
+    System,
+}
+
+impl fmt::Display for ReindexTarget {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            ReindexTarget::Index => "INDEX",
+            ReindexTarget::Table => "TABLE",
+            ReindexTarget::Schema => "SCHEMA",
+            ReindexTarget::Database => "DATABASE",
+            ReindexTarget::System => "SYSTEM",
+        })
+    }
+}
+
+/// A `REINDEX` statement.
+///
+/// ```sql
+/// REINDEX [ ( option [, ...] ) ] { INDEX | TABLE | SCHEMA | DATABASE | SYSTEM } [ CONCURRENTLY ] name
+/// ```
+/// The name is optional for `DATABASE` and `SYSTEM`, which default to the current database.
+///
+/// [PostgreSQL](https://www.postgresql.org/docs/current/sql-reindex.html)
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub struct ReindexStatement {
+    /// The parenthesized options: `CONCURRENTLY [ boolean ]`, `TABLESPACE name`, `VERBOSE [ boolean ]`.
+    pub options: Vec<UtilityOption>,
+    /// What is rebuilt.
+    pub target: ReindexTarget,
+    /// Whether the bare `CONCURRENTLY` keyword follows the target, as opposed to
+    /// the `CONCURRENTLY` option in the parenthesized list.
+    pub concurrently: bool,
+    /// The index, table, schema, or database to rebuild.
+    pub name: Option<ObjectName>,
+}
+
+impl fmt::Display for ReindexStatement {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "REINDEX")?;
+        if !self.options.is_empty() {
+            write!(f, " ({})", display_comma_separated(&self.options))?;
+        }
+        write!(f, " {}", self.target)?;
+        if self.concurrently {
+            write!(f, " CONCURRENTLY")?;
+        }
+        if let Some(name) = &self.name {
+            write!(f, " {name}")?;
+        }
+        Ok(())
+    }
+}
+
+impl From<ReindexStatement> for Statement {
+    fn from(v: ReindexStatement) -> Self {
+        Self::Reindex(v)
     }
 }
 

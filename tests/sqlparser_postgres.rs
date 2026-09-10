@@ -1096,6 +1096,7 @@ fn parse_drop_and_comment_collation_ast() {
         pg_and_generic().verified_stmt("DROP COLLATION test0"),
         Statement::Drop {
             object_type: ObjectType::Collation,
+            concurrently: false,
             if_exists: false,
             names: vec![ObjectName::from(vec![Ident::new("test0")])],
             cascade: false,
@@ -1110,6 +1111,7 @@ fn parse_drop_and_comment_collation_ast() {
         pg_and_generic().verified_stmt("DROP COLLATION IF EXISTS test0"),
         Statement::Drop {
             object_type: ObjectType::Collation,
+            concurrently: false,
             if_exists: true,
             names: vec![ObjectName::from(vec![Ident::new("test0")])],
             cascade: false,
@@ -9930,4 +9932,94 @@ fn parse_non_reserved_keywords_as_table_alias() {
             "SELECT * FROM tbl_name {kw} JOIN tbl_name_2 ON {kw}.id = tbl_name_2.id"
         ));
     }
+}
+
+#[test]
+fn parse_reindex() {
+    for sql in [
+        "REINDEX INDEX idx_a",
+        "REINDEX TABLE t",
+        "REINDEX SCHEMA s",
+        "REINDEX DATABASE db",
+        "REINDEX DATABASE",
+        "REINDEX SYSTEM",
+        "REINDEX INDEX CONCURRENTLY idx_a",
+        "REINDEX TABLE CONCURRENTLY sc.t",
+        "REINDEX (VERBOSE) TABLE t",
+        "REINDEX (CONCURRENTLY, VERBOSE) INDEX idx_a",
+        "REINDEX (CONCURRENTLY true, TABLESPACE fast) TABLE t",
+    ] {
+        pg_and_generic().verified_stmt(sql);
+    }
+
+    match pg().verified_stmt("REINDEX (VERBOSE) INDEX CONCURRENTLY sc.idx_a") {
+        Statement::Reindex(ReindexStatement {
+            options,
+            target,
+            concurrently,
+            name,
+        }) => {
+            assert_eq!(options.len(), 1);
+            assert_eq!(options[0].name, Ident::new("VERBOSE"));
+            assert_eq!(options[0].arg, None);
+            assert_eq!(target, ReindexTarget::Index);
+            assert!(concurrently);
+            assert_eq!(
+                name,
+                Some(ObjectName::from(vec![
+                    Ident::new("sc"),
+                    Ident::new("idx_a")
+                ]))
+            );
+        }
+        _ => unreachable!(),
+    }
+
+    match pg().verified_stmt("REINDEX SYSTEM") {
+        Statement::Reindex(ReindexStatement { target, name, .. }) => {
+            assert_eq!(target, ReindexTarget::System);
+            assert_eq!(name, None);
+        }
+        _ => unreachable!(),
+    }
+
+    assert_eq!(
+        pg().parse_sql_statements("REINDEX idx_a").unwrap_err(),
+        ParserError::ParserError(
+            "Expected: INDEX, TABLE, SCHEMA, DATABASE or SYSTEM after REINDEX, found: idx_a"
+                .to_string()
+        )
+    );
+}
+
+#[test]
+fn parse_drop_index_concurrently() {
+    for sql in [
+        "DROP INDEX CONCURRENTLY idx_a",
+        "DROP INDEX CONCURRENTLY IF EXISTS idx_a",
+        "DROP INDEX CONCURRENTLY idx_a, idx_b CASCADE",
+    ] {
+        pg_and_generic().verified_stmt(sql);
+    }
+
+    match pg().verified_stmt("DROP INDEX CONCURRENTLY IF EXISTS idx_a") {
+        Statement::Drop {
+            object_type,
+            concurrently,
+            if_exists,
+            names,
+            ..
+        } => {
+            assert_eq!(object_type, ObjectType::Index);
+            assert!(concurrently);
+            assert!(if_exists);
+            assert_eq!(names, vec![ObjectName::from(vec![Ident::new("idx_a")])]);
+        }
+        _ => unreachable!(),
+    }
+
+    // Only an index can be dropped concurrently.
+    assert!(pg()
+        .parse_sql_statements("DROP TABLE CONCURRENTLY t")
+        .is_err());
 }

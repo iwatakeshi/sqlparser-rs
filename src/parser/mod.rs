@@ -741,6 +741,10 @@ impl<'a> Parser<'a> {
                     self.prev_token();
                     self.parse_vacuum()
                 }
+                Keyword::REINDEX => {
+                    self.prev_token();
+                    self.parse_reindex()
+                }
                 Keyword::RESET => self.parse_reset().map(Into::into),
                 _ => self.expected("an SQL statement", next_token),
             },
@@ -7667,6 +7671,9 @@ impl<'a> Parser<'a> {
                 self.peek_token_ref(),
             );
         };
+        // PostgreSQL: `DROP INDEX CONCURRENTLY [IF EXISTS] name`
+        let concurrently =
+            object_type == ObjectType::Index && self.parse_keyword(Keyword::CONCURRENTLY);
         // Many dialects support the non-standard `IF EXISTS` clause and allow
         // specifying multiple objects to delete in a single statement
         let if_exists = self.parse_keywords(&[Keyword::IF, Keyword::EXISTS]);
@@ -7692,6 +7699,7 @@ impl<'a> Parser<'a> {
         };
         Ok(Statement::Drop {
             object_type,
+            concurrently,
             if_exists,
             names,
             cascade,
@@ -20946,6 +20954,53 @@ impl<'a> Parser<'a> {
             options,
             query,
             connection,
+        }))
+    }
+
+    /// Parse a PostgreSQL `REINDEX` statement.
+    ///
+    /// ```sql
+    /// REINDEX [ ( option [, ...] ) ] { INDEX | TABLE | SCHEMA | DATABASE | SYSTEM } [ CONCURRENTLY ] name
+    /// ```
+    fn parse_reindex(&mut self) -> Result<Statement, ParserError> {
+        self.expect_keyword(Keyword::REINDEX)?;
+        let options = if self.peek_token_ref().token == Token::LParen {
+            self.parse_utility_options()?
+        } else {
+            vec![]
+        };
+        let target = match self.parse_one_of_keywords(&[
+            Keyword::INDEX,
+            Keyword::TABLE,
+            Keyword::SCHEMA,
+            Keyword::DATABASE,
+            Keyword::SYSTEM,
+        ]) {
+            Some(Keyword::INDEX) => ReindexTarget::Index,
+            Some(Keyword::TABLE) => ReindexTarget::Table,
+            Some(Keyword::SCHEMA) => ReindexTarget::Schema,
+            Some(Keyword::DATABASE) => ReindexTarget::Database,
+            Some(Keyword::SYSTEM) => ReindexTarget::System,
+            _ => {
+                return self.expected_ref(
+                    "INDEX, TABLE, SCHEMA, DATABASE or SYSTEM after REINDEX",
+                    self.peek_token_ref(),
+                )
+            }
+        };
+        let concurrently = self.parse_keyword(Keyword::CONCURRENTLY);
+        // The name is optional for DATABASE and SYSTEM, which default to the
+        // current database.
+        let name = if matches!(target, ReindexTarget::Database | ReindexTarget::System) {
+            self.maybe_parse(|p| p.parse_object_name(false))?
+        } else {
+            Some(self.parse_object_name(false)?)
+        };
+        Ok(Statement::Reindex(ReindexStatement {
+            options,
+            target,
+            concurrently,
+            name,
         }))
     }
 
