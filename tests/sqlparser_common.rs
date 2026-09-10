@@ -10033,13 +10033,17 @@ fn parse_drop_index() {
     let sql = "DROP INDEX idx_a";
     match verified_stmt(sql) {
         Statement::Drop {
-            names, object_type, ..
+            names,
+            object_type,
+            concurrently,
+            ..
         } => {
             assert_eq!(
                 vec!["idx_a"],
                 names.iter().map(ToString::to_string).collect::<Vec<_>>()
             );
             assert_eq!(ObjectType::Index, object_type);
+            assert!(!concurrently);
         }
         _ => unreachable!(),
     }
